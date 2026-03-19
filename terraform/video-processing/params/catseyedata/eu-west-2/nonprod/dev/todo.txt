@@ -1,0 +1,15 @@
+Terraform for IAM roles anywhere created (and destroyed)
+Got to the point where the older pi configuration did not support the aws_signing_helper
+Next steps:
+Configure the new pis (need new SD cards)
+- Create new raspberry image
+- Push the CA from local to the machine
+- Install the aws_signing_helper
+- run the terraform again - GOT TO HERE 19th March 26
+- update the aws_signing_helper profile with the appropriate roles and ids
+- test the aws_signing_helper
+- continue with Kinesis ideals (create Kinesis instance in tf, and test passing video to it)
+- point up the live and the archive streams to the React app (local first)
+- deploy the static react app and test on browser
+- Create casing for the thing and test
+16th March 2026

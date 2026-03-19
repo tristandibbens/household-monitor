@@ -1,0 +1,71 @@
+#create the sns topic to send alerts to - requires a manual subscription!
+resource "aws_sns_topic" "activity_alerts" {
+  provider = aws.customer_account
+  name     = "${var.project}-${var.envtype}-${var.envname}-activity-alerts"
+  tags = merge(
+    local.common_tags,
+    {
+      name = "${var.project}-sns-activity-alerting"
+    }
+  )
+}
+
+resource "aws_sns_topic_subscription" "sms" {
+  provider                = aws.customer_account
+  topic_arn = aws_sns_topic.activity_alerts.arn
+  protocol  = "sms"
+  endpoint  = var.sms_phone_number
+}
+
+# Optional account-level SMS preferences
+resource "aws_sns_sms_preferences" "account" {
+  provider                = aws.customer_account
+  monthly_spend_limit                  = var.sns_sms_monthly_spend_limit_usd
+  default_sms_type                     = "Transactional"
+  default_sender_id                    = "PICAM"
+  delivery_status_iam_role_arn         = aws_iam_role.sns_sms_feedback.arn
+  delivery_status_success_sampling_rate = 100
+}
+
+resource "aws_iam_role" "sns_sms_feedback" {
+  provider                = aws.customer_account
+  name = "${local.name}-sns-sms-feedback-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "sns.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "sns_sms_feedback" {
+  provider                = aws.customer_account
+  name = "${local.name}-sns-sms-feedback-policy"
+  role = aws_iam_role.sns_sms_feedback.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:PutMetricFilter",
+          "logs:PutRetentionPolicy"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
