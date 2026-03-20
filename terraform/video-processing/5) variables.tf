@@ -57,7 +57,7 @@ variable "sns_sms_monthly_spend_limit_usd" {
 variable "device_cert_common_name" {
   description = "Expected certificate common name for the Pi device certificate"
   type        = string
-  default     = "raspberrypi-zero-w"
+  default     = "pi-frontdoor-002"
 }
 
 variable "s3_transition_to_ia_days" {

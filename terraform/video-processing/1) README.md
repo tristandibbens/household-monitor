@@ -56,11 +56,16 @@ Keep root/root-ca.key private.
 ### Step 2: Generate the Pi keypair and CSR on the Pi
 ```
 sudo mkdir -p /opt/pi-cam/certs
-cd /opt/pi-cam/certs
+sudo chown -R kahuna:kahuna /opt/pi-cam
+sudo chmod 755 /opt/pi-cam
+sudo chmod 700 /opt/pi-cam/certs
 ```
 ```
-sudo openssl ecparam -name prime256v1 -genkey -noout -out device.key
+openssl genpkey -algorithm EC \
+  -pkeyopt ec_paramgen_curve:P-256 \
+  -out device.key
 ```
+And within this change the CN for the device name
 ```
 sudo openssl req -new \
   -key device.key \
@@ -97,7 +102,7 @@ Now sign it with the root CA:
 openssl x509 -req \
   -in csrs/pi-frontdoor-002.csr \
   -CA certs/root-ca.crt \
-  -CAkey root/root-ca.key \
+  -CAkey kahuna/root-ca.key \
   -CAcreateserial \
   -out certs/pi-frontdoor-002.crt \
   -days 365 \
@@ -162,12 +167,7 @@ sudo install -m 0755 aws_signing_helper /usr/local/bin/aws_signing_helper
 #### signed helper credential test
 On the Pi, with aws_signing_helper installed:
 ```
-./aws_signing_helper credential-process \
-  --certificate /opt/pi-cam/certs/device.crt \
-  --private-key /opt/pi-cam/certs/device.key \
-  --trust-anchor-arn arn:aws:rolesanywhere:REGION:ACCOUNT:trust-anchor/TA_ID \
-  --profile-arn arn:aws:rolesanywhere:REGION:ACCOUNT:profile/PROFILE_ID \
-  --role-arn arn:aws:iam::ACCOUNT:role/YOUR_ROLE
+~/bin/aws_signing_helper credential-process --certificate /opt/pi-cam/certs/device.crt --private-key /opt/pi-cam/certs/device.key --trust-anchor-arn arn:aws:rolesanywhere:eu-west-2:418605420571:trust-anchor/4be882dc-3a19-48c3-87d2-2adfd9a24af2 --profile-arn arn:aws:rolesanywhere:eu-west-2:418605420571:profile/4bae0116-bb48-411c-ab2b-c54569ec7ce0 --role-arn arn:aws:iam::418605420571:role/household-monitor-pi-uploader
 ```
 If that prints JSON credentials, the chain is good.
 

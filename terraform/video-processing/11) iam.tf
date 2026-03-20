@@ -10,7 +10,7 @@ resource "awscc_rolesanywhere_trust_anchor" "pi_ca" {
   source = {
     source_type = "CERTIFICATE_BUNDLE"
     source_data = {
-      x509_certificate_data = file("/home/tristanyoga/pi-pki/certs/root-ca.crt") #TODO - not best practice, need to address if growing up
+      x509_certificate_data = file("/home/tristanyoga/pi2-pki/certs/root-ca.crt") #TODO - not best practice, need to address if growing up
     }
   }
 }
