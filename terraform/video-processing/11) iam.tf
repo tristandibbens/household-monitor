@@ -19,9 +19,9 @@ resource "awscc_rolesanywhere_trust_anchor" "pi_ca" {
 # IAM role assumed via Roles Anywhere
 ############################
 
-resource "aws_iam_role" "pi_uploader" {
+resource "aws_iam_role" "pi_kvs_producer" {
   provider = aws.customer_account
-  name     = "${var.project}-pi-uploader"
+  name     = "${var.project}-pi-kvs-producer"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -52,44 +52,37 @@ resource "aws_iam_role" "pi_uploader" {
 }
 
 ############################
-# Least-privilege S3 access for clip uploads
+# Least-privilege S3 access for Kinesis producer
 ############################
 
-resource "aws_iam_role_policy" "pi_uploader_s3" {
+resource "aws_iam_role_policy" "pi_kvs_producer" {
   provider = aws.customer_account
-  name     = "${var.project}-pi-uploader-s3"
-  role     = aws_iam_role.pi_uploader.id
+  name     = "${var.project}-pi-kvs-producer"
+  role     = aws_iam_role.pi_kvs_producer.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "ListBucketForPrefix"
+        Sid    = "UseWebRTCSignalingChannel"
         Effect = "Allow"
         Action = [
-          "s3:ListBucket"
+          "kinesisvideo:DescribeSignalingChannel",
+          "kinesisvideo:GetSignalingChannelEndpoint",
+          "kinesisvideo:GetIceServerConfig",
+          "kinesisvideo:ConnectAsMaster"
         ]
-        Resource = aws_s3_bucket.video_archive.arn
-        Condition = {
-          StringLike = {
-            "s3:prefix" = [
-              "clips/*"
-            ]
-          }
-        }
+        Resource = awscc_kinesisvideo_signaling_channel.pi_channel.arn
       },
       {
-        Sid    = "WriteClips"
+        Sid    = "IngestToVideoStream"
         Effect = "Allow"
         Action = [
-          "s3:PutObject",
-          "s3:AbortMultipartUpload",
-          "s3:ListBucketMultipartUploads",
-          "s3:ListMultipartUploadParts"
+          "kinesisvideo:DescribeStream",
+          "kinesisvideo:GetDataEndpoint",
+          "kinesisvideo:PutMedia"
         ]
-        Resource = [
-          "${aws_s3_bucket.video_archive.arn}/clips/*"
-        ]
+        Resource = aws_kinesis_video_stream.live_feed.arn
       }
     ]
   })
@@ -103,13 +96,54 @@ resource "aws_rolesanywhere_profile" "pi_profile" {
   provider         = aws.customer_account
   name             = "${var.project}-profile"
   enabled          = true
-  role_arns        = [aws_iam_role.pi_uploader.arn]
+  role_arns        = [aws_iam_role.pi_kvs_producer.arn]
   duration_seconds = 3600
 
-  # session_policy = jsonencode({
-  #   Version   = "2012-10-17"
-  #   Statement = []
-  # })
+  tags = local.common_tags
+}
+
+##################################
+## React App role
+##################################
+
+resource "aws_iam_role" "kvs_viewer" {
+  provider = aws.customer_account
+  name     = "${var.project}-kvs-viewer"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.customer.account_id}:root"
+        }
+      }
+    ]
+  })
 
   tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "kvs_viewer" {
+  provider = aws.customer_account
+  name     = "${var.project}-kvs-viewer"
+  role     = aws_iam_role.kvs_viewer.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadPlaybackFromSpecificVideoStream"
+        Effect = "Allow"
+        Action = [
+          "kinesisvideo:DescribeStream",
+          "kinesisvideo:GetDataEndpoint",
+          "kinesisvideo:GetHLSStreamingSessionURL"
+        ]
+        Resource = aws_kinesis_video_stream.live_feed.arn
+      }
+    ]
+  })
 }

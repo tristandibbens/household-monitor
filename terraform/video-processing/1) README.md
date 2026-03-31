@@ -171,10 +171,16 @@ On the Pi, with aws_signing_helper installed:
 ```
 If that prints JSON credentials, the chain is good.
 
-Then wire it into AWS CLI:
+Then wire it into AWS CLI via a profile:
 ```
-aws configure set profile.rolesanywhere-test.credential_process \
-'/path/to/aws_signing_helper credential-process --certificate /opt/pi-cam/certs/device.crt --private-key /opt/pi-cam/certs/device.key --trust-anchor-arn arn:aws:rolesanywhere:REGION:ACCOUNT:trust-anchor/TA_ID --profile-arn arn:aws:rolesanywhere:REGION:ACCOUNT:profile/PROFILE_ID --role-arn arn:aws:iam::ACCOUNT:role/YOUR_ROLE'
+[profile pi-kvs]
+region = eu-west-2
+credential_process = /home/kahuna/bin/aws_signing_helper \
+--certificate /opt/pi-cam/certs/device.crt \
+--private-key /opt/pi-cam/certs/device.key \
+--trust-anchor-arn arn:aws:rolesanywhere:eu-west-2:418605420571:trust-anchor/4be882dc-3a19-48c3-87d2-2adfd9a24af2 \
+--profile-arn arn:aws:rolesanywhere:eu-west-2:418605420571:profile/4bae0116-bb48-411c-ab2b-c54569ec7ce0 \
+--role-arn arn:aws:iam::418605420571:role/household-monitor-pi-uploader
 ```
 ```
 aws sts get-caller-identity --profile rolesanywhere-test
@@ -195,6 +201,172 @@ root CA: CA:TRUE, Certificate Sign
 device cert: CA:FALSE, Digital Signature, clientAuth
 
 If you want, paste the two grep outputs and I’ll sanity-check them before you recreate the trust anchor.
+
+## Kinesis producer build on the pi
+Create the profile dependency and the credential helper bits first
+
+### Install the SDK for the videoRTC
+```
+git clone https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c.git \
+  --single-branch -b main kvs-webrtc-sdk
+```
+
+```
+sudo apt update
+sudo apt install -y \
+  cmake m4 pkg-config \
+  libssl-dev libcurl4-openssl-dev liblog4cplus-dev \
+  libsrtp2-dev libusrsctp-dev libwebsockets-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+  gstreamer1.0-tools gstreamer1.0-libcamera
+```
+
+```
+cd ~/kvs-webrtc-sdk
+rm -rf build
+mkdir build
+cd build
+cmake .. -DBUILD_DEPENDENCIES=OFF -DUSE_OPENSSL=ON
+make -j2
+```
+
+### Test sample script
+
+```
+#!/usr/bin/env bash
+set -euo pipefail
+
+CREDS_JSON=$(/home/kahuna/bin/aws_signing_helper credential-process \
+  --certificate /opt/pi-cam/certs/device.crt \
+  --private-key /opt/pi-cam/certs/device.key \
+  --trust-anchor-arn arn:aws:rolesanywhere:eu-west-2:418605420571:trust-anchor/4be882dc-3a19-48c3-87d2-2adfd9a24af2 \
+  --profile-arn arn:aws:rolesanywhere:eu-west-2:418605420571:profile/4bae0116-bb48-411c-ab2b-c54569ec7ce0 \
+  --role-arn arn:aws:iam::418605420571:role/household-monitor-pi-kvs-producer)
+
+export AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["AccessKeyId"])')
+export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["SecretAccessKey"])')
+export AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["SessionToken"])')
+export AWS_DEFAULT_REGION=eu-west-2
+```
+```
+cd /kvs-webrtc-sdk/build 
+```
+```
+./samples/kvsWebrtcClientMasterGstSample household-monitor-pi-channel video-only devicesrc
+```
+
+## Configure the Kinesis Master service:
+AWS says the helper is compatible with credential_process, and when used with an AWS SDK the credentials refresh before expiry without extra renewal code. The shared config entry looks like this.
+
+/home/pi/.aws/config (must be inline, no line breaks):
+```
+[profile pi-kvs]
+region = eu-west-2
+credential_process = /usr/local/bin/aws_signing_helper credential-process --certificate /etc/iamra/cert.pem --private-key /etc/iamra/key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-2:ACCOUNT_ID:trust-anchor/TA_ID --profile-arn arn:aws:rolesanywhere:eu-west-2:ACCOUNT_ID:profile/PROFILE_ID --role-arn arn:aws:iam::ACCOUNT_ID:role/YOUR_PI_ROLE
+```
+Then run the streamer service with only:
+
+AWS_PROFILE=pi-kvs
+AWS_REGION=eu-west-2
+no static AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, or AWS_SESSION_TOKEN
+
+```
+sudo apt-get install -y jq
+```
+A simple service:
+
+/etc/systemd/system/pi-kvs-webrtc.service:
+```
+[Unit]
+Description=Pi KVS WebRTC master stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/local/bin/start-pi-stream.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+/usr/local/bin/start-pi-stream.sh - non working:
+```
+#!/bin/bash
+set -euo pipefail
+
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_PROFILE
+
+cd /home/pi/kvs-webrtc-sdk/build
+
+exec ./samples/kvsWebrtcClientMasterGstSample \
+  your-channel-name \
+  video-only \
+  devicesrc
+```
+this worked bypassing the profile approach above, which did not work
+/usr/local/bin/start-pi-stream.sh - working:
+```
+#!/bin/bash
+set -euo pipefail
+
+REGION="eu-west-2"
+CHANNEL_NAME="household-monitor-pi-channel"
+
+CRED_JSON=$(/home/kahuna/bin/aws_signing_helper credential-process --certificate /opt/pi-cam/certs/device.crt --priva>
+
+export AWS_ACCESS_KEY_ID="$(echo "$CRED_JSON" | /usr/bin/jq -r .AccessKeyId)"
+export AWS_SECRET_ACCESS_KEY="$(echo "$CRED_JSON" | /usr/bin/jq -r .SecretAccessKey)"
+export AWS_SESSION_TOKEN="$(echo "$CRED_JSON" | /usr/bin/jq -r .SessionToken)"
+export AWS_DEFAULT_REGION="$REGION"
+export AWS_REGION="$REGION"
+
+cd /home/kahuna/kvs-webrtc-sdk/build
+
+exec ./samples/kvsWebrtcClientMasterGstSample \
+  "$CHANNEL_NAME" \
+  video-only \
+  devicesrc
+```
+Then:
+```
+sudo systemctl daemon-reload
+sudo systemctl enable pi-kvs-webrtc.service
+sudo systemctl start pi-kvs-webrtc.service
+'''
+Then check the logs for the process to see if successful
+'''
+journalctl -u pi-kvs-webrtc.service -f
+```
+> Note that I had to restart the pi between configuration changes since the errors stuck in cache
+
+#TODO - need to handle token expiry in the pi-kvs service
+#TODO - continue with REACT dev based on stream working again
+
+## Fine tune the Kinesis connectivity
+### Troubleshooting gitlab page:
+Configure this as a viewer, not sending video, and then configure the pi as the master allowing the viewer to see the streamed video.
+Dont forget to send the blank WebRTC Ingestion and Storage value.
+https://awslabs.github.io/amazon-kinesis-video-streams-webrtc-sdk-js/examples/index.html  
+
+
+### Turn off bluetooth
+```
+sudo systemctl disable --now bluetooth
+sudo rfkill block bluetooth
+```
+
+### Sort out wifi powersave:
+To make that persistent on Raspberry Pi OS, add this to /etc/NetworkManager/conf.d/wifi-powersave.conf if you use NetworkManager:
+```
+[connection]
+wifi.powersave = 2
+```
 
 ## Battery configuration
 Using the UPS Hat want to be able to keep track of power usage and battery state from our React App:

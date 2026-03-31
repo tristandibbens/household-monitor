@@ -1,23 +1,23 @@
-# output "sns_etl_alert_topic" {
-#   value = aws_sns_topic.etl_alerts.arn
-# }
+output "kinesis_video_stream_name" {
+  value = aws_kinesis_video_stream.live_feed.name
+}
 
-# output "db_instance_endpoint" {
-#   value = module.db.db_instance_endpoint
-# }
+output "kinesis_video_stream_arn" {
+  value = aws_kinesis_video_stream.live_feed.arn
+}
 
-# output "lambda_interaccount_transfers_arn" {
-#   value = aws_lambda_function.interaccount_transfers.arn
-# }
+output "rolesanywhere_trust_anchor_arn" {
+  value = awscc_rolesanywhere_trust_anchor.pi_ca.trust_anchor_arn
+}
 
-# output "lambda_statement_loader_arn" {
-#   value = aws_lambda_function.statement_loader.arn
-# }
+output "rolesanywhere_profile_arn" {
+  value = aws_rolesanywhere_profile.pi_profile.arn
+}
 
-# output "aws_s3_bucket_arn" {
-#   value = aws_s3_bucket.storage.arn
-# }
+output "pi_kvs_producer_role_arn" {
+  value = aws_iam_role.pi_kvs_producer.arn
+}
 
-# output "statement_loader_lambda" {
-#   value = aws_lambda_function.statement_loader
-# }
+output "kvs_viewer_role_arn" {
+  value = aws_iam_role.kvs_viewer.arn
+}
