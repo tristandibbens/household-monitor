@@ -260,7 +260,7 @@ cd /kvs-webrtc-sdk/build
 ## Configure the Kinesis Master service:
 AWS says the helper is compatible with credential_process, and when used with an AWS SDK the credentials refresh before expiry without extra renewal code. The shared config entry looks like this.
 
-/home/pi/.aws/config (must be inline, no line breaks):
+/home/kahuna/.aws/config (must be inline, no line breaks):
 ```
 [profile pi-kvs]
 region = eu-west-2
@@ -318,11 +318,11 @@ set -euo pipefail
 REGION="eu-west-2"
 CHANNEL_NAME="household-monitor-pi-channel"
 
-CRED_JSON=$(/home/kahuna/bin/aws_signing_helper credential-process --certificate /opt/pi-cam/certs/device.crt --priva>
+CRED_JSON=$(/home/kahuna/bin/aws_signing_helper credential-process --certificate /opt/pi-cam/certs/device.crt --private-key /opt/pi-cam/certs/device.key --trust-anchor-arn arn:aws:rolesanywhere:eu-west-2:418605420571:trust-anchor/4be882dc-3a19-48c3-87d2-2adfd9a24af2 --profile-arn arn:aws:rolesanywhere:eu-west-2:418605420571:profile/4bae0116-bb48-411c-ab2b-c54569ec7ce0 --role-arn arn:aws:iam::418605420571:role/household-monitor-pi-kvs-producer)
 
-export AWS_ACCESS_KEY_ID="$(echo "$CRED_JSON" | /usr/bin/jq -r .AccessKeyId)"
-export AWS_SECRET_ACCESS_KEY="$(echo "$CRED_JSON" | /usr/bin/jq -r .SecretAccessKey)"
-export AWS_SESSION_TOKEN="$(echo "$CRED_JSON" | /usr/bin/jq -r .SessionToken)"
+export AWS_ACCESS_KEY_ID="$(echo "$CRED_JSON" | jq -r .AccessKeyId)"
+export AWS_SECRET_ACCESS_KEY="$(echo "$CRED_JSON" | jq -r .SecretAccessKey)"
+export AWS_SESSION_TOKEN="$(echo "$CRED_JSON" | jq -r .SessionToken)"
 export AWS_DEFAULT_REGION="$REGION"
 export AWS_REGION="$REGION"
 
@@ -353,6 +353,95 @@ journalctl -u pi-kvs-webrtc.service -f
 Configure this as a viewer, not sending video, and then configure the pi as the master allowing the viewer to see the streamed video.
 Dont forget to send the blank WebRTC Ingestion and Storage value.
 https://awslabs.github.io/amazon-kinesis-video-streams-webrtc-sdk-js/examples/index.html  
+
+## Make the service able to refresh using IAM Roles Anywhere
+#TODO update pi
+#!/bin/bash
+set -euo pipefail
+
+REGION="eu-west-2"
+CHANNEL_NAME="household-monitor-pi-channel"
+
+HELPER="/home/kahuna/bin/aws_signing_helper"
+CERT="/opt/pi-cam/certs/device.crt"
+KEY="/opt/pi-cam/certs/device.key"
+TRUST_ANCHOR_ARN="arn:aws:rolesanywhere:eu-west-2:418605420571:trust-anchor/4be882dc-3a19-48c3-87d2-2adfd9a24af2"
+PROFILE_ARN="arn:aws:rolesanywhere:eu-west-2:418605420571:profile/4bae0116-bb48-411c-ab2b-c54569ec7ce0"
+ROLE_ARN="arn:aws:iam::418605420571:role/household-monitor-pi-kvs-producer"
+
+APP_DIR="/home/kahuna/kvs-webrtc-sdk/build"
+APP="./samples/kvsWebrtcClientMasterGstSample"
+
+cleanup() {
+  if [[ -n "${CHILD_PID:-}" ]] && kill -0 "${CHILD_PID}" 2>/dev/null; then
+    kill -TERM "${CHILD_PID}" 2>/dev/null || true
+    wait "${CHILD_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+cd "$APP_DIR"
+
+while true; do
+  echo "Fetching fresh Roles Anywhere credentials..."
+  CRED_JSON="$("$HELPER" credential-process \
+    --certificate "$CERT" \
+    --private-key "$KEY" \
+    --trust-anchor-arn "$TRUST_ANCHOR_ARN" \
+    --profile-arn "$PROFILE_ARN" \
+    --role-arn "$ROLE_ARN")"
+
+  export AWS_ACCESS_KEY_ID="$(echo "$CRED_JSON" | jq -r .AccessKeyId)"
+  export AWS_SECRET_ACCESS_KEY="$(echo "$CRED_JSON" | jq -r .SecretAccessKey)"
+  export AWS_SESSION_TOKEN="$(echo "$CRED_JSON" | jq -r .SessionToken)"
+  export AWS_DEFAULT_REGION="$REGION"
+  export AWS_REGION="$REGION"
+
+  EXPIRATION="$(echo "$CRED_JSON" | jq -r .Expiration)"
+  EXPIRY_EPOCH="$(date -d "$EXPIRATION" +%s)"
+  NOW_EPOCH="$(date +%s)"
+
+  # Restart 5 minutes before expiry
+  REFRESH_BUFFER=300
+  RUN_FOR=$((EXPIRY_EPOCH - NOW_EPOCH - REFRESH_BUFFER))
+
+  # Safety floor
+  if [[ "$RUN_FOR" -lt 60 ]]; then
+    RUN_FOR=60
+  fi
+
+  echo "Credentials expire at: $EXPIRATION"
+  echo "Running sample for $RUN_FOR seconds before refresh"
+
+  "$APP" \
+    "$CHANNEL_NAME" \
+    video-only \
+    devicesrc &
+  CHILD_PID=$!
+
+  sleep "$RUN_FOR" &
+  TIMER_PID=$!
+
+  # If the app exits early, fail the wrapper so systemd can restart it cleanly
+  if wait "$CHILD_PID"; then
+    APP_EXIT=0
+  else
+    APP_EXIT=$?
+  fi
+
+  if kill -0 "$TIMER_PID" 2>/dev/null; then
+    kill "$TIMER_PID" 2>/dev/null || true
+    wait "$TIMER_PID" 2>/dev/null || true
+  fi
+
+  if [[ "$APP_EXIT" -ne 0 ]]; then
+    echo "WebRTC sample exited with code $APP_EXIT"
+    exit "$APP_EXIT"
+  fi
+
+  # If it exited cleanly before timer, restart loop anyway
+  CHILD_PID=""
+done
 
 
 ### Turn off bluetooth
@@ -520,7 +609,8 @@ Result is a running service that returns a json output as follows:
   "timestamp": "2026-03-19T14:20:00Z"
 }
 
-The api call is ```curl http://192.168.4.114:8000/api/ups```
+The api call is ```curl http://raspberrypiw2.local:8000/api/ups```
+or on the pi ```curl http://127.0.0.1:8000/api/ups```
 To see the service running on the pi run ```sudo systemctl status ups-api```
 
 ### Shutdown
